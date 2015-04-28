@@ -1,0 +1,306 @@
+libname mydata "/courses/u_northwestern.edu1/i_638478/c_7857/imc486";
+
+libname aaron "/home/ranan2014/sasuser.v93";
+
+/* Without Demo Info Version*/
+
+proc sort data=mydata.lookup out=lookup;
+ by pod_id;
+run;
+
+proc sort data=mydata.ordprod out=ordprod;
+ by pod_id;
+run;
+
+data prod_final;
+ merge ordprod (in=a) lookup (in=b);
+ by pod_id;
+ if a;
+ 
+ if owner="GENERAL MI" then GMprod=1; else GMprod=0;
+ 
+keep ord_id pod_id owner GMprod;
+run;
+
+/*
+proc print data=prod_final (obs=10); run;
+proc freq data=prod_final; table GMprod; run;
+*/
+
+proc sort data=prod_final out=prod_final;
+ by ord_id;
+run;
+
+data ord_prod_roll;
+ set prod_final;
+ by ord_id;
+ retain GMord;
+ if first.ord_id then do;
+ GMord=0;
+ end;
+ 
+  GMord = GMord + GMprod;
+
+ if last.ord_id;
+ keep ord_id GMord;
+run;
+
+/*
+proc print data=ord_prod_roll(obs=100);run;
+proc freq data=ord_prod_roll; table GMord; run;
+*/
+
+/*limit Time*/
+
+data rec_ord;
+set mydata.order;
+
+where dlv_dt > "01jul2011"d;
+run;
+
+/*
+proc contents data=rec_ord;run;
+proc print data=rec_ord (obs=10);run;
+
+/*time-limiting end*/
+
+proc sort data=rec_ord out=rec_order;
+ by ord_id;
+run;
+
+proc sort data=ord_prod_roll out=ord_prod_roll;
+ by ord_id;
+run;
+
+data aaron.ord_full;
+ merge rec_order (in=a) ord_prod_roll (in=b);
+ by ord_id;
+ 
+ if a;
+ 
+ keep ord_id cnsm_id dlv_dt ord_seq_num it_dmnd_qy GMord;
+ 
+ if GMord="." then GMord=0;
+ 
+run;
+
+/*
+proc sort data=aaron.ord_full out=aaron.ord_full;by dlv_dt;run;
+proc print data=aaron.ord_full (obs=10);run;
+*/
+
+/*
+proc print data=aaron.ord_full (obs=10); run;
+proc freq data=aaron.ord_full; table GMord; run;
+*/
+
+proc sort data=aaron.ord_full out=aaron.ord_full;
+ by cnsm_id;
+ run;
+
+data aaron.cust;
+ set aaron.ord_full;
+ by cnsm_id;
+
+ retain recency length ord_num_tot nth_ord_max ord_size_tot GMcnsm;
+ 
+ if first .cnsm_id then do;
+ 
+ recency=999999;
+ length=.;
+ ord_num_tot=0;
+ nth_ord_max=.;
+ ord_size_tot=0;
+ GMcnsm=0;
+ 
+ end;
+ 
+ diff="25jun2013"d-dlv_dt;
+ if recency>diff then recency=diff;
+ if length=. or length<diff then length=diff;
+ ord_num_tot=ord_num_tot+1;
+ 
+ if nth_ord_max=. or nth_ord_max<ord_seq_num then nth_ord_max=ord_seq_num;
+
+ ord_size_tot=ord_size_tot+it_dmnd_qy;
+
+ GMcnsm=GMcnsm+GMord;
+ 
+ if last.cnsm_id;
+
+ keep cnsm_id recency length ord_num_tot it_dmnd_qy ord_size_tot GMcnsm GMmark;
+ 
+ if  GMcnsm >= 1 then GMmark = 1; else GMmark = 0;
+ 
+run;
+
+proc print data=aaron.cust(obs=20);run;
+proc freq data=aaron.cust;table GMmark;run;
+
+/* end of rolling up | adding GMmark back to ord datafile*/
+
+data aaron.ord_ltv;
+merge aaron.ord_full (in=a) aaron.cust (in=b);
+by cnsm_id;
+if a;
+
+keep cnsm_id ord_id dlv_dt it_dmnd_qy GMord GMcnsm GMmark;
+
+run;
+
+proc sort data=aaron.ord_ltv out=aaron.ord_ltv;
+ by cnsm_id ord_id dlv_dt;
+run;
+
+proc print data=aaron.ord_ltv (obs=50);
+run;
+
+/* limit cust */
+
+data aaron.ord_ltvGM;
+set aaron.ord_ltv;
+where GMmark = 1;
+run;
+
+proc contents data=aaron.ord_ltvGM;run;
+
+proc print data=aaron.ord_ltvGM (obs=20);run;
+
+
+/* Calculating Transition Prob for General Pop*/
+
+DATA aaron.rollup_ltv;
+  SET aaron.ord_ltv;
+  BY cnsm_id;
+  LENGTH targbuy targdol recy freq 4;
+  RETAIN targbuy targdol recy freq;
+  
+ if first.cnsm_id then do;
+    targbuy=0;
+    targdol=0;
+    freq=0;
+    recy=9999;
+  END;
+  
+  diff = ("25Apr2013"d - dlv_dt)/30;
+  IF diff < 0 THEN DO;
+    targbuy = 1;
+    targdol=SUM(it_dmnd_qy, targdol);
+  END;
+  
+  ELSE DO; /* base period */
+    IF diff<recy THEN recy=diff;
+    freq = freq + 1;
+  END;
+  
+  if last.cnsm_id;
+  
+  KEEP cnsm_id targbuy targdol recy freq;
+
+RUN;
+
+proc print data=aaron.rollup_ltv (obs=20);
+run;
+
+PROC FORMAT;
+  VALUE recbin
+    0 - <1 = "r<1 mon"
+    1 - <2 = "1<=r<2"
+    2 - HIGH = "r>=2";
+
+RUN;
+
+/* get rid of the order with recency =9999 */
+
+data aaron.rollup_ltv;
+set aaron.rollup_ltv;
+where recy < 9999;
+run;
+
+
+PROC FREQ DATA=aaron.rollup_ltv;
+  TABLE recy * targbuy / NOCOL NOPERCENT;
+  FORMAT recy recbin.;
+RUN;
+
+PROC MEANS DATA=aaron.rollup_ltv MAXDEC=2;
+  VAR targdol;
+  WHERE targbuy=1;
+RUN;
+
+
+/* Calculating Transition Prob for GM Cust*/
+
+DATA aaron.rollup_ltvGM;
+  SET aaron.ord_ltvGM;
+  BY cnsm_id;
+  LENGTH targbuy_GM targdol_GM recy_GM freq_GM 4;
+  RETAIN targbuy_GM targdol_GM recy_GM freq_GM;
+  
+ if first.cnsm_id then do;
+    targbuy_GM=0;
+    targdol_GM=0;
+    freq_GM=0;
+    recy_GM=9999;
+  END;
+  
+  diff_GM = ("25Apr2013"d - dlv_dt)/30;
+  IF diff_GM < 0 THEN DO;
+    targbuy_GM = 1;
+    targdol_GM=SUM(it_dmnd_qy, targdol_GM);
+  END;
+  
+  ELSE DO; /* base period */
+    IF diff_GM<recy_GM THEN recy_GM=diff_GM;
+    freq_GM = freq_GM + 1;
+  END;
+  
+  if last.cnsm_id;
+  
+  KEEP cnsm_id targbuy_GM targdol_GM recy_GM freq_GM;
+
+RUN;
+
+proc print data=aaron.rollup_ltvGM (obs=20);
+run;
+
+PROC FORMAT;
+  VALUE recbin
+    0 - <1 = "r<1 mon"
+    1 - <2 = "1<=r<2"
+    2 - HIGH = "r>=2";
+RUN;
+
+/* get rid of the order with recency =9999 */
+
+data aaron.rollup_ltvGM;
+set aaron.rollup_ltvGM;
+where recy_GM < 9999;
+run;
+
+/* Merge Seg Info back to GM Cust file */
+
+data rollup_seg;
+merge aaron.rollup_ltvGM (in=a) aaron.results2 (in=b);
+by cnsm_id;
+if a;
+
+keep cnsm_id targbuy_GM targdol_GM recy_GM freq_GM Cluster;
+run;
+
+proc freq data=rollup_seg;table cluster;run;
+
+title "Transition Prob for GM Cust seg2";
+
+PROC FREQ DATA=rollup_seg;
+  TABLE recy_GM * targbuy_GM / NOCOL NOPERCENT;
+  FORMAT recy_GM recbin.;
+  where cluster = 2;
+RUN;
+
+PROC MEANS DATA=rollup_seg MAXDEC=2;
+  VAR targdol_GM;
+  WHERE targbuy_GM=1 and cluster = 2;
+RUN;
+
+
